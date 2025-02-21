@@ -1,22 +1,13 @@
-using UnityEngine;
+using ExcelDataReader;
 using System;
-using System.IO;
-using System.Data;
-using System.Linq;
 using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
-using ExcelDataReader;
+using UnityEngine;
 
-/// <summary>
-/// 종합 로더
-/// 1) SheetBindingAttribute로 시트-필드 연결
-/// 2) 없으면 fallback(필드 타입으로 저장)
-/// 3) multi-column (#1, #2) 병합
-/// 4) ExtendedAttributes(1~6) 처리
-/// 5) Dict 중복 key 시 skip or exception
-/// 6) Key() 없는 경우 fallback
-/// </summary>
 public static class ExcelLoader
 {
     public static void LoadAllExcelFiles(object container, string folderPath)
@@ -27,19 +18,27 @@ public static class ExcelLoader
             return;
         }
 
-        // XLS 인코딩 (필요 없으면 주석)
-        //System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
-
         var files = Directory.GetFiles(folderPath, "*.xlsx", SearchOption.TopDirectoryOnly);
         foreach (var file in files)
         {
             string fileName = Path.GetFileName(file);
             if (fileName.StartsWith("~"))
             {
-                Debug.Log($"[ExcelLoader] Skip file ~: {fileName}");
                 continue;
             }
             LoadExcel(container, file);
+        }
+
+        var cFields = container.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance);
+
+        foreach (var field in cFields)
+        {
+            var bindAttr = field.GetCustomAttribute<SheetBindingAttribute>();
+
+            if (bindAttr != null && bindAttr.optional == false && field.GetValue(container) == null)
+            {
+                throw new Exception($"[ExcelLoader] Sheet not found for {field.Name}");
+            }
         }
     }
 
@@ -49,40 +48,37 @@ public static class ExcelLoader
         using (var reader = ExcelReaderFactory.CreateReader(stream))
         {
             var ds = reader.AsDataSet();
+
+            int count = 0;
             foreach (DataTable sheet in ds.Tables)
             {
                 string rawSheet = sheet.TableName ?? "";
-                if (rawSheet.StartsWith("~"))
+                if (rawSheet.StartsWith("~") || rawSheet.StartsWith("#"))
                 {
-                    Debug.Log($"[ExcelLoader] Skip sheet ~: {rawSheet}");
                     continue;
                 }
-                // '#' 이후 무시
                 string sheetName = rawSheet.Split('#')[0].Trim();
 
-                Type dataType = Type.GetType(sheetName);
-                if (dataType == null)
+                var cFields = container.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance);
+
+                foreach (var field in cFields)
                 {
-                    // SheetBinding에서 skipIfSheetNotFound?
-                    // -> 이건 container 필드 쪽에서 관리해야 함
-                    continue;
+                    var bindAttr = field.GetCustomAttribute<SheetBindingAttribute>();
+
+                    if (field.Name == sheetName || (bindAttr != null && bindAttr.SheetName == sheetName))
+                    {
+                        ParseSheetAndStore(container, sheet, field);
+                    }
                 }
-                ParseSheet(container, sheet, dataType);
+                count++;
             }
         }
     }
 
-    /// <summary>
-    /// 시트 -> dataType 파싱
-    /// 1) multi-col (bonusDamage#1, #2, #3)
-    /// 2) ExtendedAttributes
-    /// 3) Key() or fallback
-    /// -> dataList & dataDict
-    /// -> StoreInContainer
-    /// </summary>
-    private static void ParseSheet(object container, DataTable sheet, Type dataType)
+    private static void ParseSheetAndStore(object container, DataTable sheet, FieldInfo field)
     {
         int rowCount = sheet.Rows.Count;
+
         if (rowCount <= 1)
         {
             Debug.LogWarning($"[ExcelLoader] Sheet {sheet.TableName} is empty.");
@@ -90,8 +86,6 @@ public static class ExcelLoader
 
         int colCount = sheet.Columns.Count;
 
-        // (A) 헤더: index -> rawHeader
-        // We'll do "bonusDamage#1,#2" grouping
         Dictionary<int, string> headerMap = new Dictionary<int, string>();
         for (int c = 0; c < colCount; c++)
         {
@@ -99,128 +93,88 @@ public static class ExcelLoader
             headerMap[c] = head;
         }
 
-        // groupedCols : baseName -> List<int> (column indexes)
-        // ex) "bonusDamage#1" -> baseName="bonusDamage"
-        //     "bonusDamage#2" -> same baseName
         Dictionary<string, List<int>> groupedCols = new Dictionary<string, List<int>>();
         for (int c = 0; c < colCount; c++)
         {
-            string raw = headerMap[c];
-            if (string.IsNullOrWhiteSpace(raw)) continue;
-            if (raw.StartsWith("~") || raw.StartsWith("#")) continue;
+            string rawHeader = headerMap[c];
+            if (string.IsNullOrWhiteSpace(rawHeader)) continue;
+            if (rawHeader.StartsWith("~") || rawHeader.StartsWith("#")) continue;
 
-            string baseName = raw.Split('#')[0].Trim();  // "bonusDamage#1" => "bonusDamage"
+            string baseName = rawHeader.Split('#')[0].Trim();  // "bonusDamage#1" => "bonusDamage"
             if (!groupedCols.ContainsKey(baseName))
                 groupedCols[baseName] = new List<int>();
             groupedCols[baseName].Add(c);
         }
 
-        // (B) 파싱 대상 필드
-        var fields = dataType.GetFields(BindingFlags.Public | BindingFlags.Instance);
-
-        List<object> dataList = new List<object>();
-        Dictionary<string, object> dataDict = new Dictionary<string, object>(); // Key() or fallback
+        List<Dictionary<string, string>> dataList = new();
 
         for (int r = 1; r < rowCount; r++)
         {
-            object instance = Activator.CreateInstance(dataType);
+            Dictionary<string, string> fieldValues = new Dictionary<string, string>();
 
-            // 각 baseName -> merge => field
+            bool _isBreak = true;
             foreach (var kv in groupedCols)
             {
                 string baseName = kv.Key;
-                var indexes = kv.Value;  // 여러 col index
+                List<int> cols = kv.Value;  // 여러 col index
 
-                // IgnoreParsing?
-                var field = fields.FirstOrDefault(f => f.Name == baseName);
-                if (field == null)
-                    continue; // no matching field name
-
-                if (field.GetCustomAttribute<IgnoreParsingAttribute>() != null)
-                    continue; // skip
-
-                // 병합
                 List<string> parts = new List<string>();
-                foreach (int cIdx in indexes)
+
+                foreach (int cIdx in cols)
                 {
-                    string cellVal = (r < rowCount) ? sheet.Rows[r][cIdx]?.ToString() : "";
+                    string cellVal = sheet.Rows[r][cIdx]?.ToString() ?? "";
                     if (!string.IsNullOrWhiteSpace(cellVal))
                         parts.Add(cellVal.Trim());
                 }
-                // "1,2,3"
-                string merged = string.Join(",", parts);
+                if (parts.Count > 0)
+                    _isBreak = false;
 
-                // 변환 + validation
-                object finalVal = ConvertAndValidate(merged, field);
-
-                // setValue
-                field.SetValue(instance, finalVal);
+                fieldValues.Add(baseName, string.Join(",", parts));
             }
 
-            // Key() or fallback
-            string key = null;
-            var keyMethod = dataType.GetMethod("Key");
-            if (keyMethod != null)
-            {
-                key = keyMethod.Invoke(instance, null)?.ToString();
-            }
-            else
-            {
-                // fallback: groupedCols 중 가장 작은 colIndex
-                if (groupedCols.Count > 0)
-                {
-                    var firstPair = groupedCols.OrderBy(x => x.Value.Min()).First();
-                    var fallbackField = fields.FirstOrDefault(f => f.Name == firstPair.Key);
-                    if (fallbackField != null)
-                    {
-                        object val = fallbackField.GetValue(instance);
-                        if (val != null) key = val.ToString();
-                    }
-                }
-            }
-            if (!string.IsNullOrEmpty(key))
-            {
-                if (dataDict.ContainsKey(key))
-                {
-                    // default: throw
-                    // but skip if needed => handled later by skipDuplicates
-                    dataDict[key] = instance; // or skip
-                }
-                else
-                {
-                    dataDict[key] = instance;
-                }
-            }
-            dataList.Add(instance);
+            if (_isBreak)
+                break;
+
+            dataList.Add(fieldValues);
         }
 
-        // (C) StoreInContainer
-        StoreInContainer(container, dataType, dataList, dataDict);
-        Debug.Log($"[ExcelLoader] Loaded {dataList.Count} rows for {dataType.Name} from sheet {sheet.TableName}");
+        StoreInContainer(container, sheet, field, dataList);
     }
 
-    /// <summary>
-    /// ExtendedAttributes 처리( DefaultValue, RequiredColumn, ValidateRange, ValidateRegex ) 등
-    /// ColumnIndex / ColumnName / RequiredColumn 은 헤더맵에서 결정할 때 사용
-    /// 여기서는 "merged" 문자열 -> 최종 값 변환 + ValidateRange/Regex
-    /// </summary>
     private static object ConvertAndValidate(string cellStr, FieldInfo field)
     {
-        // DefaultValue check
         if (string.IsNullOrWhiteSpace(cellStr))
         {
-            // default
-            var defAttr = field.GetCustomAttribute<DefaultValueAttribute>();
-            if (defAttr != null) return defAttr.Value;
+            var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
+
+            if (excelParer != null) return excelParer.DefaultValue;
             return GetDefaultValue(field.FieldType);
         }
 
-        // Try parse
-        object finalVal;
+        object finalVal = null;
         try
         {
-            // Enum?
-            if (field.FieldType.IsEnum)
+            var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
+
+            var customParserValue = TryParseUsingStaticMethod(cellStr, field.FieldType);
+
+            if (customParserValue != null)
+            {
+                finalVal = customParserValue;
+            }
+            else if (excelParer != null && excelParer.CustomParser != null)
+            {
+                ICustomParser parser = (ICustomParser)Activator.CreateInstance(excelParer.CustomParser);
+                finalVal = parser.Parse(cellStr);
+            }
+            else if (typeof(ICustomParser).IsAssignableFrom(field.FieldType))
+            {
+                ICustomParser parser = (ICustomParser)Activator.CreateInstance(field.FieldType);
+
+                if (parser != null)
+                    finalVal = parser.Parse(cellStr);
+            }
+            else if (field.FieldType.IsEnum)
             {
                 if (Enum.TryParse(field.FieldType, cellStr, true, out object enResult))
                 {
@@ -228,15 +182,15 @@ public static class ExcelLoader
                 }
                 else
                 {
-                    Debug.LogError($" Enum Parse Error fieldName : {field.FieldType.Name} , cellString : {cellStr}");
-                    var defAttr = field.GetCustomAttribute<DefaultValueAttribute>();
-                    if (defAttr != null) return defAttr.Value;
+                    Debug.LogError($" Enum Parse Error fieldName : {field.Name} {field.FieldType.Name} , cellString : {cellStr}");
+
+                    if (excelParer != null) return excelParer.DefaultValue;
+
                     return GetDefaultValue(field.FieldType);
                 }
             }
             else if (field.FieldType.IsArray)
             {
-                // ex: "1,2,3" => int[]
                 Type elemType = field.FieldType.GetElementType();
                 var splitted = cellStr.Split(',')
                     .Select(s => Convert.ChangeType(s.Trim(), elemType))
@@ -247,7 +201,6 @@ public static class ExcelLoader
             }
             else if (field.FieldType.IsGenericType && field.FieldType.GetGenericTypeDefinition() == typeof(List<>))
             {
-                // e.g. List<int>
                 var elemType = field.FieldType.GetGenericArguments()[0];
                 var listObj = Activator.CreateInstance(field.FieldType) as System.Collections.IList;
                 foreach (var part in cellStr.Split(','))
@@ -260,20 +213,33 @@ public static class ExcelLoader
                 }
                 finalVal = listObj;
             }
-            else
+            else if (field.FieldType == typeof(Vector2))
             {
-                // basic Convert
+
+                finalVal = Vector2Parser.ParseValue(cellStr);
+            }
+            else if (field.FieldType == typeof(Vector3))
+            {
+
+                finalVal = Vector3Parser.ParseValue(cellStr);
+            }
+
+            if (finalVal == null)
+            {
                 finalVal = Convert.ChangeType(cellStr, field.FieldType);
             }
         }
         catch
         {
-            var defAttr = field.GetCustomAttribute<DefaultValueAttribute>();
-            if (defAttr != null) return defAttr.Value;
+            Debug.LogError($" Convert Error : {field.Name} {field.FieldType.Name} , cellString : {cellStr}");
+
+            var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
+
+            if (excelParer != null) return excelParer.DefaultValue;
+
             return GetDefaultValue(field.FieldType);
         }
 
-        // ValidateRange
         var rangeAttr = field.GetCustomAttribute<ValidateRangeAttribute>();
         if (rangeAttr != null)
         {
@@ -285,7 +251,6 @@ public static class ExcelLoader
             }
         }
 
-        // ValidateRegex
         var regexAttr = field.GetCustomAttribute<ValidateRegexAttribute>();
         if (regexAttr != null)
         {
@@ -299,9 +264,16 @@ public static class ExcelLoader
         return finalVal;
     }
 
-    /// <summary>
-    /// 타입별 기본값(0, "", false, null)
-    /// </summary>
+    private static object TryParseUsingStaticMethod(string value, Type targetType)
+    {
+        var method = targetType.GetMethod("ParseValue", BindingFlags.Public | BindingFlags.Static);
+        if (method != null)
+        {
+            return method.Invoke(null, new object[] { value });
+        }
+        return null;
+    }
+
     private static object GetDefaultValue(Type t)
     {
         if (t == typeof(string)) return "";
@@ -312,113 +284,147 @@ public static class ExcelLoader
         if (t == typeof(double)) return 0.0;
         if (t == typeof(decimal)) return 0m;
         if (t == typeof(bool)) return false;
+        if (t == typeof(Vector2)) return Vector2.zero;
+        if (t == typeof(Vector3)) return Vector3.zero;
         if (t.IsValueType) return Activator.CreateInstance(t);
         return null;
     }
 
     private static void StoreInContainer(object container,
-                                     Type dataType,
-                                     List<object> dataList,
-                                     Dictionary<string, object> dataDict)
+                                     DataTable sheet,
+                                     FieldInfo parentField,
+                                     List<Dictionary<string, string>> dataList)
     {
-        // container의 public 필드 스캔
-        var cFields = container.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance);
+        var fieldType = GetType(parentField);
 
-        bool anyBoundField = false;
+        var bindAttr = parentField.GetCustomAttribute<SheetBindingAttribute>();
 
-        // (1) SheetBinding 필드 먼저 처리
-        foreach (var field in cFields)
+        var fields = fieldType.GetFields(BindingFlags.Public | BindingFlags.Instance);
+
+        foreach (var data in dataList)
         {
-            var bindAttr = field.GetCustomAttribute<SheetBindingAttribute>();
-            if (bindAttr != null && bindAttr.SheetName == dataType.Name)
+            object instance = Activator.CreateInstance(fieldType);
+            object objectKey = null;
+
+
+            foreach (var field in fields)
             {
-                anyBoundField = true;
+                var excelParser = parentField.GetCustomAttribute<ExcelParerAttribute>();
 
-                // optional=false + dataList.Count==0 => 경고/에러
-                if (dataList.Count == 0 && !bindAttr.optional)
-                {
-                    Debug.LogWarning($"[ExcelLoader] sheet={dataType.Name} has no data, but 'optional=false' for field '{field.Name}'.");
-                }
-
-                // 실제 할당
-                FillBoundField(container, field, dataType, dataList, dataDict, bindAttr);
-            }
-        }
-
-        // (2) 만약 SheetBinding이 아예 없었다면 fallback
-        if (!anyBoundField)
-        {
-            foreach (var field in cFields)
-            {
-                // IgnoreParsing?
-                if (field.GetCustomAttribute<IgnoreParsingAttribute>() != null)
+                if (excelParser != null && excelParser.Ignore)
                     continue;
 
-                // 단일 (fieldType == dataType)
-                if (field.FieldType == dataType)
-                {
-                    if (dataList.Count > 0)
-                    {
-                        field.SetValue(container, dataList[0]);
-                    }
-                }
-                // 리스트
-                else if (IsListOfType(field.FieldType, dataType))
-                {
-                    var listObj = field.GetValue(container) as System.Collections.IList;
-                    if (listObj != null)
-                    {
-                        foreach (var obj in dataList)
-                            listObj.Add(obj);
-                    }
-                }
-                // 딕셔너리 - key type 변환
-                else if (IsDictType(field.FieldType, out var keyT, out var valT)
-                         && valT == dataType)
-                {
-                    var dictVal = field.GetValue(container);
-                    if (dictVal == null)
-                    {
-                        dictVal = Activator.CreateInstance(field.FieldType);
-                        field.SetValue(container, dictVal);
-                    }
-                    var dictID = dictVal as System.Collections.IDictionary;
+                string name = field.Name;
 
-                    if (dictID != null)
+                if (excelParser != null && excelParser.ColumnName != null)
+                {
+                    name = excelParser.ColumnName;
+                }
+
+                if (excelParser != null && excelParser.RequiredColumn && data.ContainsKey(name) == false)
+                {
+                    throw new Exception($"[ExcelLoader] Required column '{name}' not found for {sheet.TableName}");
+                }
+
+                foreach (var keyValue in data)
+                {
+                    string baseName = keyValue.Key;
+                    string value = keyValue.Value;
+
+                    if (name == baseName)
                     {
-                        foreach (var kvp in dataDict)
+                        var fieldValue = ConvertAndValidate(value, field);
+
+                        if (objectKey == null)
                         {
-                            string strKey = kvp.Key;  // excel string key
-                            object newKey = ConvertKeyString(strKey, keyT);
-                            if (newKey == null)
-                            {
-                                Debug.LogWarning($"[ExcelLoader] skip key='{strKey}' can't parse as {keyT.Name}");
-                                continue;
-                            }
-                            if (dictID.Contains(newKey))
-                            {
-                                // fallback => throw or skip
-                                throw new Exception($"[ExcelLoader] Duplicate key {newKey} for field={field.Name}");
-                            }
-                            dictID[newKey] = kvp.Value;
+                            objectKey = fieldValue;
                         }
+
+                        field.SetValue(instance, fieldValue);
                     }
                 }
             }
+
+
+            foreach (var field in fields)
+            {
+                var multiParser = field.GetCustomAttribute<MultiColumnParserAttribute>();
+
+                if (multiParser == null || multiParser.ColumnNames == null || multiParser.ColumnNames.Length == 0)
+                    continue;
+
+                bool isbreak = false;
+                foreach (var item in multiParser.ColumnNames)
+                {
+                    if (string.IsNullOrWhiteSpace(item))
+                    {
+                        isbreak = true;
+                        break;
+                    }
+                    if (data.ContainsKey(item) == false)
+                    {
+                        isbreak = true;
+                        break;
+                    }
+                }
+
+                if (isbreak)
+                    continue;
+
+                List<string> values = new List<string>(multiParser.ColumnNames.Length);
+
+                foreach (var item in multiParser.ColumnNames)
+                {
+                    values.Add(data[item]);
+                }
+
+                var mp = (IMultiColumnParser)Activator.CreateInstance(multiParser.ParserType);
+                field.SetValue(instance, mp.Parse(values.ToArray()));
+            }
+
+            object key = null;
+
+            var keyMethod = fieldType.GetMethod("Key");
+            if (keyMethod != null)
+            {
+                key = keyMethod.Invoke(instance, null)?.ToString();
+            }
+            else
+            {
+                key = objectKey;
+            }
+
+            FillBoundField(container, parentField, fieldType, key, instance, bindAttr);
         }
+
     }
 
-    /// <summary>
-    /// SheetBinding이 있는 필드 => 이 로직 우선
-    /// </summary>
-    private static void FillBoundField(object container,
-                                       FieldInfo field,
-                                       Type dataType,
-                                       List<object> dataList,
-                                       Dictionary<string, object> dataDict,
-                                       SheetBindingAttribute bindAttr)
+    private static Type GetType(FieldInfo field)
     {
-        // (a) Dictionary<K,V>?
+        if (IsDictType(field.FieldType, out var keyType, out var valType))
+        {
+            return valType;
+        }
+        else if (field.FieldType.IsArray)
+        {
+            return field.FieldType.GetElementType();
+        }
+
+        else if (field.FieldType.IsGenericType && field.FieldType.GetGenericTypeDefinition() == typeof(List<>))
+        {
+            return field.FieldType.GetGenericArguments()[0];
+        }
+
+        return field.FieldType;
+    }
+
+    private static void FillBoundField(object container,
+                                   FieldInfo field,
+                                   Type dataType,
+                                   object key,
+                                   object dataList,
+                                   SheetBindingAttribute bindAttr)
+    {
         if (IsDictType(field.FieldType, out var keyType, out var valType))
         {
             if (valType == dataType)
@@ -432,29 +438,17 @@ public static class ExcelLoader
                 var dictID = dictVal as System.Collections.IDictionary;
                 if (dictID != null)
                 {
-                    foreach (var kvp in dataDict)
+                    if (dictID.Contains(key))
                     {
-                        // excel key => string
-                        object convertedKey = ConvertKeyString(kvp.Key, keyType);
-                        if (convertedKey == null)
+                        if (bindAttr != null && bindAttr.skipDuplicates)
                         {
-                            Debug.LogWarning($"[ExcelLoader] skip invalid key='{kvp.Key}' for field={field.Name}");
-                            continue;
                         }
-                        if (dictID.Contains(convertedKey))
+                        else
                         {
-                            if (bindAttr.skipDuplicates)
-                            {
-                                // skip
-                                continue;
-                            }
-                            else
-                            {
-                                throw new Exception($"[ExcelLoader] Duplicate key {convertedKey} in dict field={field.Name}");
-                            }
+                            throw new Exception($"[ExcelLoader] Duplicate key {key} in dict field={field.Name}");
                         }
-                        dictID[convertedKey] = kvp.Value;
                     }
+                    dictID[key] = dataList;
                 }
             }
             else
@@ -462,13 +456,10 @@ public static class ExcelLoader
                 Debug.LogWarning($"[ExcelLoader] field {field.Name}: dictionary ValueType != {dataType.Name}");
             }
         }
-        // (b) 단일
         else if (field.FieldType == dataType)
         {
-            if (dataList.Count > 0)
-                field.SetValue(container, dataList[0]);
+            field.SetValue(container, dataList);
         }
-        // (c) 리스트
         else if (IsListOfType(field.FieldType, dataType))
         {
             var listVal = field.GetValue(container) as System.Collections.IList;
@@ -478,14 +469,30 @@ public static class ExcelLoader
                 field.SetValue(container, newList);
                 listVal = newList as System.Collections.IList;
             }
-            foreach (var obj in dataList)
+            listVal.Add(dataList);
+
+        }
+        else if (field.FieldType.IsArray && field.FieldType.GetElementType() == dataType)
+        {
+            var existingArray = field.GetValue(container) as Array;
+            int existingLength = existingArray != null ? existingArray.Length : 0;
+            int newLength = existingLength + 1;
+            Array newArray = Array.CreateInstance(dataType, newLength);
+
+            if (existingArray != null)
             {
-                listVal.Add(obj);
+                Array.Copy(existingArray, newArray, existingLength);
             }
+
+            newArray.SetValue(dataList, existingLength);
+
+            field.SetValue(container, newArray);
         }
         else
         {
-            Debug.LogWarning($"[ExcelLoader] field {field.Name} has [SheetBinding({bindAttr.SheetName})], but type mismatch? {field.FieldType}");
+            string name = field.FieldType.Name;
+
+            Debug.LogWarning($"[ExcelLoader] field {field.Name} has [SheetBinding({name})], but type mismatch? {field.FieldType}");
         }
     }
 
@@ -495,10 +502,7 @@ public static class ExcelLoader
         if (t.GetGenericTypeDefinition() != typeof(List<>)) return false;
         return t.GetGenericArguments()[0] == elem;
     }
-    /// <summary>
-    /// Dictionary<K, V> 인지 판별, K/V 타입을 out으로 얻는다.
-    /// 예) Dictionary<int, UnitData> → keyType=int, valType=UnitData
-    /// </summary>
+
     private static bool IsDictType(Type t, out Type keyType, out Type valType)
     {
         keyType = null;
@@ -511,51 +515,5 @@ public static class ExcelLoader
         keyType = args[0];
         valType = args[1];
         return true;
-    }
-
-    /// <summary>
-    /// string → keyType으로 변환
-    /// 예) keyType == int → int.TryParse
-    ///     keyType == enum → Enum.TryParse
-    ///     keyType == string → 그대로
-    /// 실패 시 null 반환
-    /// </summary>
-    private static object ConvertKeyString(string strKey, Type keyType)
-    {
-        if (keyType == typeof(string))
-        {
-            // 그대로
-            return strKey;
-        }
-        else if (keyType == typeof(int))
-        {
-            if (int.TryParse(strKey, out int iVal))
-                return iVal;
-            return null;
-        }
-        else if (keyType == typeof(long))
-        {
-            if (long.TryParse(strKey, out long lVal))
-                return lVal;
-            return null;
-        }
-        else if (keyType.IsEnum)
-        {
-            if (Enum.TryParse(keyType, strKey, true, out object enVal))
-                return enVal;
-            return null;
-        }
-        else
-        {
-            // float, double 등 더 추가 가능
-            try
-            {
-                return Convert.ChangeType(strKey, keyType);
-            }
-            catch
-            {
-                return null;
-            }
-        }
     }
 }

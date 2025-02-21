@@ -10,9 +10,6 @@ public class SheetBindingAttribute : Attribute
     /// <summary>연결할 시트(또는 dataType.Name)</summary>
     public string SheetName { get; }
 
-    /// <summary>시트를 찾지 못했을 때 스킵할지(false면 경고/에러)</summary>
-    public bool skipIfSheetNotFound { get; set; }
-
     /// <summary>데이터가 0개(또는 시트가 비었을 때) 허용할지(false면 경고/에러)</summary>
     public bool optional { get; set; }
 
@@ -20,13 +17,11 @@ public class SheetBindingAttribute : Attribute
     public bool skipDuplicates { get; set; }
 
     public SheetBindingAttribute(
-        string sheetName,
-        bool skipIfSheetNotFound = false,
-        bool optional = false,
+        string sheetName = null,
+        bool optional = true,
         bool skipDuplicates = false)
     {
         SheetName = sheetName;
-        this.skipIfSheetNotFound = skipIfSheetNotFound;
         this.optional = optional;
         this.skipDuplicates = skipDuplicates;
     }

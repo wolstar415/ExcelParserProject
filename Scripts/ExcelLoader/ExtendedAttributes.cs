@@ -1,73 +1,65 @@
 using System;
 
-/// <summary>
-/// (1) IgnoreParsing
-/// 이 필드(또는 프로퍼티)는 엑셀 파싱에서 아예 무시
-/// </summary>
-[AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
-public class IgnoreParsingAttribute : Attribute
+public interface ICustomParser
 {
-    // 필요한 옵션 있으면 추가
+    object Parse(string value);
 }
 
 /// <summary>
-/// (2) RequiredColumn
-/// 이 필드에 매핑될 컬럼이 없으면 파싱 에러
+/// IMultiColumnParser 인터페이스: 여러 컬럼을 받아 하나의 값으로 파싱합니다.
 /// </summary>
-[AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
-public class RequiredColumnAttribute : Attribute
+public interface IMultiColumnParser
 {
-    // 옵션 필요하면 추가
+    object Parse(params string[] values);
 }
 
-/// <summary>
-/// (3) ColumnName
-/// 필드/프로퍼티 이름과 다른 엑셀 컬럼명을 직접 지정
-/// </summary>
+
+
 [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
-public class ColumnNameAttribute : Attribute
+public class ExcelParerAttribute : Attribute
 {
-    public string Name { get; }
-    public ColumnNameAttribute(string name)
+    /// <summary>연결할 Column</summary>
+    public string ColumnName { get; set; }
+    /// <summary> 무시하는 데이터</summary>
+    public bool Ignore { get; set; }
+    /// <summary>필수 데이터 설정 데이터가 0개라면 에러</summary>
+    public bool RequiredColumn { get; set; }
+    /// <summary>해당 데이터가 빈칸이라면 Default Value 설정</summary>
+    public object DefaultValue { get; set; }
+    /// <summary>커스텀 파서</summary>
+    public Type CustomParser { get; set; }
+
+    public ExcelParerAttribute(
+        string columnName = null,
+        bool ignore = false,
+        bool requiredColumn = false,
+        object defaultValue = null,
+        Type customParser = null)
     {
-        Name = name;
+        this.ColumnName = columnName;
+        this.Ignore = ignore;
+        this.RequiredColumn = requiredColumn;
+        this.DefaultValue = defaultValue;
+        this.CustomParser = customParser;
+    }
+}
+
+[AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
+public class MultiColumnParserAttribute : Attribute
+{
+    public Type ParserType { get; }
+    public string[] ColumnNames { get; }
+    public MultiColumnParserAttribute(Type parserType, params string[] columnNames)
+    {
+        ParserType = parserType;
+        ColumnNames = columnNames;
     }
 }
 
 /// <summary>
-/// (4) ColumnIndex
-/// 이 필드(또는 프로퍼티)는 엑셀의 N번째 컬럼과 매핑
-/// (헤더 없이, 또는 고정 위치일 때 유용)
-/// </summary>
-[AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
-public class ColumnIndexAttribute : Attribute
-{
-    public int Index { get; }
-    public ColumnIndexAttribute(int index)
-    {
-        Index = index;
-    }
-}
-
-/// <summary>
-/// (5) DefaultValue
-/// 셀이 비어있거나 변환 실패 시 이 값을 사용
-/// </summary>
-[AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
-public class DefaultValueAttribute : Attribute
-{
-    public object Value { get; }
-    public DefaultValueAttribute(object value)
-    {
-        Value = value;
-    }
-}
-
-/// <summary>
-/// (6-a) ValidateRange
 /// 파싱 결과가 [Min, Max] 범위여야 함
 /// </summary>
-[AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
+[AttributeUsage(AttributeTargets.Field)]
 public class ValidateRangeAttribute : Attribute
 {
     public double Min { get; }
@@ -80,10 +72,9 @@ public class ValidateRangeAttribute : Attribute
 }
 
 /// <summary>
-/// (6-b) ValidateRegex
 /// 파싱 결과가 특정 정규식 패턴과 일치해야 함
 /// </summary>
-[AttributeUsage(AttributeTargets.Field | AttributeTargets.Property)]
+[AttributeUsage(AttributeTargets.Field)]
 public class ValidateRegexAttribute : Attribute
 {
     public string Pattern { get; }
