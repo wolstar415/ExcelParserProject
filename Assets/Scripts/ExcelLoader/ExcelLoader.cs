@@ -80,15 +80,28 @@ public static class ExcelLoader
                 }
                 string sheetName = rawSheet.Split('#')[0].Trim();
 
-                var matchedFieldEntry = containerFields.FirstOrDefault(entry =>
-                    entry.Field.Name.Equals(sheetName, StringComparison.OrdinalIgnoreCase) ||
-                    (entry.Binding != null && entry.Binding.SheetName.Equals(sheetName, StringComparison.OrdinalIgnoreCase)));
+                var matchedFieldEntrys = containerFields.Where(entry =>
+                    entry.Field.Name.Equals(sheetName, StringComparison.OrdinalIgnoreCase)
+                    ||
+                    (entry.Binding != null && entry.Binding.SheetName.Equals(sheetName, StringComparison.OrdinalIgnoreCase))).ToList();
 
-                if (matchedFieldEntry != null)
+                if (matchedFieldEntrys != null && matchedFieldEntrys.Count > 0)
                 {
-                    Debug.Log($"{sheetName}");
-                    ParseSheetAndStore(container, sheet, matchedFieldEntry.Field, isColumnBased);
+                    foreach (var entrys in matchedFieldEntrys)
+                    {
+                        bool _columnBase = false;
+                        if (isColumnBased && entrys.Binding != null && entrys.Binding.isColumnBased)
+                        {
+                            _columnBase = true;
+                        }
+                        ParseSheetAndStore(container, sheet, entrys.Field, isColumnBased || _columnBase);
+                    }
                 }
+                //if (matchedFieldEntry != null)
+                //{
+                //    Debug.Log($"{matchedFieldEntry.Field.Name}");
+
+                //}
             }
         }
     }
@@ -334,7 +347,7 @@ public static class ExcelLoader
             var keyMethod = dataType.GetMethod("Key");
             key = keyMethod != null ? keyMethod.Invoke(instance, null)?.ToString() : objectKey;
 
-            FillBoundField(container, parentField, dataType, key, instance, bindAttr , sheet);
+            FillBoundField(container, parentField, dataType, key, instance, bindAttr, sheet);
         }
     }
 
@@ -349,7 +362,7 @@ public static class ExcelLoader
         return field.FieldType;
     }
 
-    private static void FillBoundField(object container, FieldInfo field, Type dataType, object key, object dataList, SheetBindingAttribute bindAttr ,DataTable sheet)
+    private static void FillBoundField(object container, FieldInfo field, Type dataType, object key, object dataList, SheetBindingAttribute bindAttr, DataTable sheet)
     {
         if (IsDictType(field.FieldType, out var keyType, out var valType))
         {
