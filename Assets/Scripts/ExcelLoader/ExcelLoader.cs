@@ -29,11 +29,6 @@ public static class ExcelLoader
             container = (T)Activator.CreateInstance(typeof(T));
         }
 
-        // 컨테이너의 필드와 SheetBindingAttribute 미리 캐싱
-        //var containerFields = container.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance)
-        //                                 .Select(f => new { Field = f, Binding = f.GetCustomAttribute<SheetBindingAttribute>() })
-        //                                 .ToList();
-
         var containerFields = container.GetType()
     .GetFields(BindingFlags.Public | BindingFlags.Instance)
     .Select(f => new ContainerFieldInfo
@@ -51,7 +46,6 @@ public static class ExcelLoader
             LoadExcel(container, file, containerFields);
         }
 
-        // 필수 바인딩 필드 체크
         foreach (var entry in containerFields)
         {
             if (entry.Binding != null && !entry.Binding.optional && entry.Field.GetValue(container) == null)
@@ -61,8 +55,13 @@ public static class ExcelLoader
         }
     }
 
-    private static void LoadExcel<T>(T container, string filePath, List<ContainerFieldInfo> containerFields) where T : class
+    public static void LoadExcel<T>(T container, string filePath, List<ContainerFieldInfo> containerFields) where T : class
     {
+        if (container == null)
+        {
+            container = (T)Activator.CreateInstance(typeof(T));
+        }
+
         using (var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
         using (var reader = ExcelReaderFactory.CreateReader(stream))
         {
@@ -73,7 +72,6 @@ public static class ExcelLoader
                 string rawSheet = sheet.TableName ?? "";
                 if (rawSheet.StartsWith("~") || rawSheet.StartsWith("#")) continue;
 
-                // 접두사 "!"가 있으면 제거하고 역전 처리를 위한 플래그 설정
                 bool isColumnBased = false;
                 if (rawSheet.StartsWith("!"))
                 {
@@ -82,7 +80,6 @@ public static class ExcelLoader
                 }
                 string sheetName = rawSheet.Split('#')[0].Trim();
 
-                // sheet와 매칭되는 필드를 미리 찾음
                 var matchedFieldEntry = containerFields.FirstOrDefault(entry =>
                     entry.Field.Name.Equals(sheetName, StringComparison.OrdinalIgnoreCase) ||
                     (entry.Binding != null && entry.Binding.SheetName.Equals(sheetName, StringComparison.OrdinalIgnoreCase)));
@@ -96,15 +93,10 @@ public static class ExcelLoader
         }
     }
 
-    /// <summary>
-    /// isColumnBased에 따라 행/열 기반 파싱 메서드를 호출한 뒤,
-    /// StoreInContainer로 넘겨주는 메서드
-    /// </summary>
     private static void ParseSheetAndStore(object container, DataTable sheet, FieldInfo field, bool isColumnBased)
     {
         List<Dictionary<string, string>> dataList = ParseSheet(sheet, isColumnBased);
 
-        // 이후 dataList를 컨테이너에 저장
         StoreInContainer(container, sheet, field, dataList);
     }
 
@@ -112,30 +104,24 @@ public static class ExcelLoader
     {
         List<Dictionary<string, string>> dataList = new();
 
-        // primary: 헤더가 위치하는 축 (행 기반이면 첫 행, 열 기반이면 첫 열)
-        // secondary: 데이터가 위치하는 축 (행 기반이면 행, 열 기반이면 열)
         int primaryCount = isColumnBased ? sheet.Rows.Count : sheet.Columns.Count;
         int secondaryCount = isColumnBased ? sheet.Columns.Count : sheet.Rows.Count;
 
-        // 최소 2개(헤더 + 데이터)가 있어야 함.
         if (primaryCount <= 1)
         {
             Debug.LogWarning($"[ExcelLoader] Sheet {sheet.TableName} is empty or lacks enough {(isColumnBased ? "rows" : "columns")} for parsing.");
             return dataList;
         }
 
-        // 첫 번째 행(또는 열)을 헤더로 사용
         var headerMap = new Dictionary<int, string>();
         for (int i = 0; i < primaryCount; i++)
         {
-            // isColumnBased: 헤더는 첫 열(즉, sheet.Rows[i][0]), 그렇지 않으면 첫 행(즉, sheet.Rows[0][i])
             string head = isColumnBased
                 ? sheet.Rows[i][0]?.ToString() ?? ""
                 : sheet.Rows[0][i]?.ToString() ?? "";
             headerMap[i] = head;
         }
 
-        // 헤더명을 그룹핑: baseName -> 인덱스 목록
         var grouped = new Dictionary<string, List<int>>();
         for (int i = 0; i < primaryCount; i++)
         {
@@ -149,7 +135,6 @@ public static class ExcelLoader
             grouped[baseName].Add(i);
         }
 
-        // 데이터 처리: 데이터는 헤더 이후의 secondary 축(행 또는 열)부터 처리
         for (int j = 1; j < secondaryCount; j++)
         {
             var fieldValues = new Dictionary<string, string>();
@@ -163,8 +148,6 @@ public static class ExcelLoader
 
                 foreach (int i in indices)
                 {
-                    // isColumnBased: 데이터는 sheet.Rows[i][j] (헤더가 열에 있으므로, j번째 열의 데이터)
-                    // 행 기반: 데이터는 sheet.Rows[j][i] (헤더가 행에 있으므로, j번째 행의 데이터)
                     string cellVal = isColumnBased
                         ? sheet.Rows[i][j]?.ToString() ?? ""
                         : sheet.Rows[j][i]?.ToString() ?? "";
@@ -196,7 +179,6 @@ public static class ExcelLoader
         try
         {
             var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
-            // 먼저 정적 ParseValue 메서드 시도
             var customParserValue = TryParseUsingStaticMethod(cellStr, field.FieldType);
             if (customParserValue != null)
             {
@@ -315,7 +297,6 @@ public static class ExcelLoader
         Type dataType = GetDataType(parentField);
         var bindAttr = parentField.GetCustomAttribute<SheetBindingAttribute>();
 
-        // dataType의 필드와 관련 어트리뷰트를 미리 캐싱 (이름 기준 매핑)
         var dataFields = dataType.GetFields(BindingFlags.Public | BindingFlags.Instance)
                                  .Select(f => new { Field = f, Parser = f.GetCustomAttribute<ExcelParerAttribute>(), MultiParser = f.GetCustomAttribute<MultiColumnParserAttribute>() })
                                  .ToDictionary(x => x.Field.Name, x => x);
@@ -325,19 +306,16 @@ public static class ExcelLoader
             object instance = Activator.CreateInstance(dataType);
             object objectKey = null;
 
-            // 단일 컬럼 데이터 매핑
             foreach (var kv in data)
             {
                 if (dataFields.TryGetValue(kv.Key, out var fieldInfo))
                 {
                     object fieldValue = ConvertAndValidate(kv.Value, fieldInfo.Field, sheet);
-                    // 첫번째 값은 key로 활용할 수 있음.
                     if (objectKey == null) objectKey = fieldValue;
                     fieldInfo.Field.SetValue(instance, fieldValue);
                 }
             }
 
-            // 멀티 컬럼 파서 처리 (필드 단위)
             foreach (var kv in dataFields)
             {
                 var mpAttr = kv.Value.MultiParser;
@@ -352,7 +330,6 @@ public static class ExcelLoader
                 kv.Value.Field.SetValue(instance, mp.Parse(values));
             }
 
-            // key 결정 : Key() 메서드 우선, 없으면 첫번째 값
             object key = null;
             var keyMethod = dataType.GetMethod("Key");
             key = keyMethod != null ? keyMethod.Invoke(instance, null)?.ToString() : objectKey;
