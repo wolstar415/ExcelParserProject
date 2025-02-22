@@ -379,7 +379,7 @@ public static class ExcelLoader
                 {
                     if (dictID.Contains(key))
                     {
-                        if (!bindAttr.skipDuplicates)
+                        if (bindAttr!=null && !bindAttr.skipDuplicates)
                             throw new Exception($"[ExcelLoader] sheet {sheet.TableName} Duplicate key {key} in dict field={field.Name}");
                     }
                     dictID[key] = dataList;
