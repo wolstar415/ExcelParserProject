@@ -50,6 +50,10 @@ public static class ExcelLoader
         }
 
     }
+
+    static string[] excelExtensions = new[] { "*.xls", "*.xlsx", "*.xlsb", "*.csv" };
+
+
     public static void LoadAllExcelFiles<T>(T container, string folderPath) where T : class
     {
         if (!Directory.Exists(folderPath))
@@ -72,8 +76,12 @@ public static class ExcelLoader
     })
     .ToList();
 
-        var files = Directory.GetFiles(folderPath, "*.xlsx", SearchOption.TopDirectoryOnly);
-        foreach (var file in files)
+        //var files = Directory.GetFiles(folderPath, "*.xlsx", SearchOption.TopDirectoryOnly);
+        var excelFiles = excelExtensions
+    .SelectMany(ext => Directory.GetFiles(folderPath, ext, SearchOption.TopDirectoryOnly))
+    .ToArray();
+
+        foreach (var file in excelFiles)
         {
             string fileName = Path.GetFileName(file);
             if (fileName.StartsWith("~")) continue;
