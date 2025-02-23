@@ -16,6 +16,40 @@ public class ContainerFieldInfo
 
 public static class ExcelLoader
 {
+
+    public static void LoadExcelFile<T>(T container, string path) where T : class
+    {
+        if(File.Exists(path) == false)
+        {
+            Debug.LogError($"[ExcelLoader] File not found: {path}");
+            return;
+        }
+
+        if (container == null)
+        {
+            container = (T)Activator.CreateInstance(typeof(T));
+        }
+
+        var containerFields = container.GetType()
+    .GetFields(BindingFlags.Public | BindingFlags.Instance)
+    .Select(f => new ContainerFieldInfo
+    {
+        Field = f,
+        Binding = f.GetCustomAttribute<SheetBindingAttribute>()
+    })
+    .ToList();
+
+        LoadExcel(container, path, containerFields);
+
+        foreach (var entry in containerFields)
+        {
+            if (entry.Binding != null && !entry.Binding.optional && entry.Field.GetValue(container) == null)
+            {
+                throw new Exception($"[ExcelLoader] Sheet not found for {entry.Field.Name}");
+            }
+        }
+
+    }
     public static void LoadAllExcelFiles<T>(T container, string folderPath) where T : class
     {
         if (!Directory.Exists(folderPath))
@@ -55,7 +89,7 @@ public static class ExcelLoader
         }
     }
 
-    public static void LoadExcel<T>(T container, string filePath, List<ContainerFieldInfo> containerFields) where T : class
+    private static void LoadExcel<T>(T container, string filePath, List<ContainerFieldInfo> containerFields) where T : class
     {
         if (container == null)
         {
@@ -73,17 +107,23 @@ public static class ExcelLoader
                 if (rawSheet.StartsWith("~") || rawSheet.StartsWith("#")) continue;
 
                 bool isColumnBased = false;
-                if (rawSheet.StartsWith("!"))
+                if (rawSheet.StartsWith("!") || rawSheet.StartsWith("*"))
                 {
                     isColumnBased = true;
                     rawSheet = rawSheet.Substring(1);
                 }
                 string sheetName = rawSheet.Split('#')[0].Trim();
 
-                var matchedFieldEntrys = containerFields.Where(entry =>
-                    entry.Field.Name.Equals(sheetName, StringComparison.OrdinalIgnoreCase)
-                    ||
-                    (entry.Binding != null && entry.Binding.SheetName.Equals(sheetName, StringComparison.OrdinalIgnoreCase))).ToList();
+
+                var matchedFieldEntrys = containerFields.Where((entry) =>
+
+                {
+                    if(entry.Binding!=null && entry.Binding.SheetName!=null)
+                    {
+                        return entry.Binding.SheetName.Equals(sheetName, StringComparison.OrdinalIgnoreCase);
+                    }
+                    return entry.Field.Name.Equals(sheetName, StringComparison.OrdinalIgnoreCase);
+                }).ToList();
 
                 if (matchedFieldEntrys != null && matchedFieldEntrys.Count > 0)
                 {
@@ -127,6 +167,9 @@ public static class ExcelLoader
             string head = isColumnBased
                 ? sheet.Rows[i][0]?.ToString() ?? ""
                 : sheet.Rows[0][i]?.ToString() ?? "";
+
+            if (string.IsNullOrWhiteSpace(head))
+                continue;
             headerMap[i] = head;
         }
 
@@ -138,6 +181,10 @@ public static class ExcelLoader
             if (rawHeader.StartsWith("~") || rawHeader.StartsWith("#")) continue;
 
             string baseName = rawHeader.Split('#')[0].Trim();
+
+            if (string.IsNullOrWhiteSpace(baseName))
+                continue;
+
             if (!grouped.ContainsKey(baseName))
                 grouped[baseName] = new List<int>();
             grouped[baseName].Add(i);
@@ -309,7 +356,7 @@ public static class ExcelLoader
             dataType = dataType.GetGenericArguments()[0];
 
         }
-        else if(dataType.IsArray)
+        else if (dataType.IsArray)
         {
             dataType = dataType.GetElementType();
         }
