@@ -169,12 +169,34 @@ public static class ExcelLoader
             return dataList;
         }
 
+        int startIndex = 0;
+
+        for (int i = 0; i < secondaryCount; i++)
+        {
+            string head = isColumnBased
+                ? sheet.Rows[0][i]?.ToString() ?? ""
+                : sheet.Rows[i][0]?.ToString() ?? "";
+
+            if (!string.IsNullOrEmpty(head) && (head.StartsWith("//") || head.StartsWith("##")))
+            {
+                startIndex++;
+                continue;
+            }
+            break;
+        }
+
+        if (primaryCount <= startIndex + 1)
+        {
+            Debug.LogWarning($"[ExcelLoader] Sheet {sheet.TableName} is empty or lacks enough {(isColumnBased ? "rows" : "columns")} for parsing.");
+            return dataList;
+        }
+
         var headerMap = new Dictionary<int, string>();
         for (int i = 0; i < primaryCount; i++)
         {
             string head = isColumnBased
-                ? sheet.Rows[i][0]?.ToString() ?? ""
-                : sheet.Rows[0][i]?.ToString() ?? "";
+                ? sheet.Rows[i][startIndex]?.ToString() ?? ""
+                : sheet.Rows[startIndex][i]?.ToString() ?? "";
 
             if (string.IsNullOrWhiteSpace(head))
                 continue;
@@ -184,6 +206,8 @@ public static class ExcelLoader
         var grouped = new Dictionary<string, List<int>>();
         for (int i = 0; i < primaryCount; i++)
         {
+            if (headerMap.ContainsKey(i) == false)
+                continue;
             string rawHeader = headerMap[i];
             if (string.IsNullOrWhiteSpace(rawHeader)) continue;
             if (rawHeader.StartsWith("~") || rawHeader.StartsWith("#")) continue;
@@ -198,8 +222,18 @@ public static class ExcelLoader
             grouped[baseName].Add(i);
         }
 
-        for (int j = 1; j < secondaryCount; j++)
+        for (int j = startIndex+1; j < secondaryCount; j++)
         {
+
+            string head = isColumnBased
+    ? sheet.Rows[0][j]?.ToString() ?? ""
+    : sheet.Rows[j][0]?.ToString() ?? "";
+
+            if (!string.IsNullOrEmpty(head) && (head.StartsWith("//") || head.StartsWith("##")))
+            {
+                continue;
+            }
+
             var fieldValues = new Dictionary<string, string>();
             bool hasData = false;
 
@@ -214,6 +248,8 @@ public static class ExcelLoader
                     string cellVal = isColumnBased
                         ? sheet.Rows[i][j]?.ToString() ?? ""
                         : sheet.Rows[j][i]?.ToString() ?? "";
+
+
                     if (!string.IsNullOrWhiteSpace(cellVal))
                     {
                         parts.Add(cellVal.Trim());
