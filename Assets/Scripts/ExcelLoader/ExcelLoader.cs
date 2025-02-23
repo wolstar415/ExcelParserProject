@@ -97,11 +97,6 @@ public static class ExcelLoader
                         ParseSheetAndStore(container, sheet, entrys.Field, isColumnBased || _columnBase);
                     }
                 }
-                //if (matchedFieldEntry != null)
-                //{
-                //    Debug.Log($"{matchedFieldEntry.Field.Name}");
-
-                //}
             }
         }
     }
@@ -308,6 +303,17 @@ public static class ExcelLoader
     private static void StoreInContainer(object container, DataTable sheet, FieldInfo parentField, List<Dictionary<string, string>> dataList)
     {
         Type dataType = GetDataType(parentField);
+
+        if (dataType.IsGenericType && dataType.GetGenericTypeDefinition() == typeof(List<>))
+        {
+            dataType = dataType.GetGenericArguments()[0];
+
+        }
+        else if(dataType.IsArray)
+        {
+            dataType = dataType.GetElementType();
+        }
+
         var bindAttr = parentField.GetCustomAttribute<SheetBindingAttribute>();
 
         var dataFields = dataType.GetFields(BindingFlags.Public | BindingFlags.Instance)
@@ -345,7 +351,7 @@ public static class ExcelLoader
 
             object key = null;
             var keyMethod = dataType.GetMethod("Key");
-            key = keyMethod != null ? keyMethod.Invoke(instance, null)?.ToString() : objectKey;
+            key = keyMethod != null ? (keyMethod.Invoke(instance, null)) : objectKey;
 
             FillBoundField(container, parentField, dataType, key, instance, bindAttr, sheet);
         }
@@ -366,28 +372,66 @@ public static class ExcelLoader
     {
         if (IsDictType(field.FieldType, out var keyType, out var valType))
         {
-            if (valType == dataType)
+
+            var dictVal = field.GetValue(container);
+            if (dictVal == null)
             {
-                var dictVal = field.GetValue(container);
-                if (dictVal == null)
+                dictVal = Activator.CreateInstance(field.FieldType);
+                field.SetValue(container, dictVal);
+            }
+            var dictID = dictVal as System.Collections.IDictionary;
+            if (dictID == null)
+                return;
+
+            if (dictID.Contains(key))
+            {
+                object existingValue = dictID[key];
+                if (existingValue != null && (existingValue is System.Collections.IList || existingValue.GetType().IsArray))
                 {
-                    dictVal = Activator.CreateInstance(field.FieldType);
-                    field.SetValue(container, dictVal);
-                }
-                var dictID = dictVal as System.Collections.IDictionary;
-                if (dictID != null)
-                {
-                    if (dictID.Contains(key))
+                    if (existingValue is System.Collections.IList list)
                     {
-                        if (bindAttr!=null && !bindAttr.skipDuplicates)
-                            throw new Exception($"[ExcelLoader] sheet {sheet.TableName} Duplicate key {key} in dict field={field.Name}");
+                        list.Add(dataList);
                     }
-                    dictID[key] = dataList;
+                    else if (existingValue.GetType().IsArray)
+                    {
+                        Array array = (Array)existingValue;
+                        int len = array.Length;
+                        Array newArray = Array.CreateInstance(valType.GetElementType(), len + 1);
+                        Array.Copy(array, newArray, len);
+                        newArray.SetValue(dataList, len);
+                        dictID[key] = newArray;
+                    }
+                }
+                else
+                {
+                    if (!bindAttr.skipDuplicates)
+                    {
+                        throw new Exception($"[ExcelLoader] Duplicate key {key} in dict field={field.Name}");
+                    }
+                    else
+                    {
+                        dictID[key] = dataList;
+                    }
                 }
             }
             else
             {
-                Debug.LogWarning($"[ExcelLoader] sheet {sheet.TableName} field {field.Name}: dictionary ValueType != {dataType.Name}");
+                if (valType.IsArray)
+                {
+                    Array newArray = Array.CreateInstance(valType.GetElementType(), 1);
+                    newArray.SetValue(dataList, 0);
+                    dictID[key] = newArray;
+                }
+                else if (valType.IsGenericType && valType.GetGenericTypeDefinition() == typeof(List<>))
+                {
+                    var list = Activator.CreateInstance(valType) as System.Collections.IList;
+                    list.Add(dataList);
+                    dictID[key] = list;
+                }
+                else
+                {
+                    dictID[key] = dataList;
+                }
             }
         }
         else if (field.FieldType == dataType)

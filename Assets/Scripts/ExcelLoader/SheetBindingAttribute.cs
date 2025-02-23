@@ -16,13 +16,19 @@ public class SheetBindingAttribute : Attribute
     /// <summary>딕셔너리 중복 키가 발생하면 스킵할지(false면 예외)</summary>
     public bool skipDuplicates { get; set; }
 
+    /// <summary> Column 으로 저장하는 방식</summary>
+    public bool isColumnBased { get; set; }
+
+
     public SheetBindingAttribute(
         string sheetName = null,
         bool optional = true,
-        bool skipDuplicates = false)
+        bool skipDuplicates = false,
+        bool isColumnBased = false)
     {
-        SheetName = sheetName;
+        this.SheetName = sheetName;
         this.optional = optional;
         this.skipDuplicates = skipDuplicates;
+        this.isColumnBased = isColumnBased;
     }
 }

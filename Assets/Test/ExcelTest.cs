@@ -1,7 +1,4 @@
-using Newtonsoft.Json;
-using System.Collections;
 using System.IO;
-using System.Text;
 using UnityEngine;
 public class ExcelTest : MonoBehaviour
 {
