@@ -16,10 +16,10 @@ public class ContainerFieldInfo
 
 public static class ExcelLoader
 {
-
+    //private static string Separator = "\u001f";
     public static void LoadExcelFile<T>(T container, string path) where T : class
     {
-        if(File.Exists(path) == false)
+        if (File.Exists(path) == false)
         {
             Debug.LogError($"[ExcelLoader] File not found: {path}");
             return;
@@ -85,6 +85,7 @@ public static class ExcelLoader
         {
             string fileName = Path.GetFileName(file);
             if (fileName.StartsWith("~")) continue;
+
             LoadExcel(container, file, containerFields);
         }
 
@@ -120,13 +121,13 @@ public static class ExcelLoader
                     isColumnBased = true;
                     rawSheet = rawSheet.Substring(1);
                 }
-                string sheetName = rawSheet.Split('#')[0].Trim();
 
+                string sheetName = rawSheet.Split('#')[0].Trim();
 
                 var matchedFieldEntrys = containerFields.Where((entry) =>
 
                 {
-                    if(entry.Binding!=null && entry.Binding.SheetName!=null)
+                    if (entry.Binding != null && entry.Binding.SheetName != null)
                     {
                         return entry.Binding.SheetName.Equals(sheetName, StringComparison.OrdinalIgnoreCase);
                     }
@@ -151,14 +152,14 @@ public static class ExcelLoader
 
     private static void ParseSheetAndStore(object container, DataTable sheet, FieldInfo field, bool isColumnBased)
     {
-        List<Dictionary<string, string>> dataList = ParseSheet(sheet, isColumnBased);
+        List<Dictionary<string, List<string>>> dataList = ParseSheet(sheet, isColumnBased);
 
         StoreInContainer(container, sheet, field, dataList);
     }
 
-    private static List<Dictionary<string, string>> ParseSheet(DataTable sheet, bool isColumnBased)
+    private static List<Dictionary<string, List<string>>> ParseSheet(DataTable sheet, bool isColumnBased)
     {
-        List<Dictionary<string, string>> dataList = new();
+        List<Dictionary<string, List<string>>> dataList = new();
 
         int primaryCount = isColumnBased ? sheet.Rows.Count : sheet.Columns.Count;
         int secondaryCount = isColumnBased ? sheet.Columns.Count : sheet.Rows.Count;
@@ -222,7 +223,7 @@ public static class ExcelLoader
             grouped[baseName].Add(i);
         }
 
-        for (int j = startIndex+1; j < secondaryCount; j++)
+        for (int j = startIndex + 1; j < secondaryCount; j++)
         {
 
             string head = isColumnBased
@@ -234,29 +235,52 @@ public static class ExcelLoader
                 continue;
             }
 
-            var fieldValues = new Dictionary<string, string>();
+            var fieldValues = new Dictionary<string, List<string>>();
             bool hasData = false;
 
             foreach (var kv in grouped)
             {
                 string baseName = kv.Key;
+
+                if (string.IsNullOrWhiteSpace(baseName))
+                {
+                    continue;
+                }
+
                 List<int> indices = kv.Value;
-                List<string> parts = new();
+                //List<string> parts = new();
 
                 foreach (int i in indices)
                 {
+                    string oriName = isColumnBased
+                        ? sheet.Rows[i][startIndex]?.ToString() ?? ""
+                        : sheet.Rows[startIndex][i]?.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(oriName))
+                    {
+                        continue;
+                    }
+
                     string cellVal = isColumnBased
-                        ? sheet.Rows[i][j]?.ToString() ?? ""
-                        : sheet.Rows[j][i]?.ToString() ?? "";
+                    ? sheet.Rows[i][j]?.ToString() ?? ""
+                    : sheet.Rows[j][i]?.ToString() ?? "";
 
 
                     if (!string.IsNullOrWhiteSpace(cellVal))
                     {
-                        parts.Add(cellVal.Trim());
                         hasData = true;
                     }
+                    else
+                    {
+                        cellVal = "";
+                    }
+
+                    if (fieldValues.ContainsKey(baseName) == false)
+                    {
+                        fieldValues.Add(baseName, new());
+                    }
+
+                    fieldValues[baseName].Add(cellVal);
                 }
-                fieldValues[baseName] = string.Join(",", parts);
             }
             if (!hasData)
                 break;
@@ -266,19 +290,54 @@ public static class ExcelLoader
         return dataList;
     }
 
-    private static object ConvertAndValidate(string cellStr, FieldInfo field, DataTable sheet)
+    private static object ConvertAndValidate(List<string> cellStrList, FieldInfo field, DataTable sheet)
     {
+        var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
+
+        string cellStr = "";
+
+        string separator = ",";
+
+        if (excelParer != null)
+        {
+            separator = excelParer.Separator;
+        }
+
+        if (cellStrList != null && cellStrList.Count > 0)
+        {
+            cellStr = cellStrList[0];
+        }
+
         if (string.IsNullOrWhiteSpace(cellStr))
         {
-            var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
             return excelParer != null ? excelParer.DefaultValue : GetDefaultValue(field.FieldType);
+        }
+
+        if (excelParer != null && excelParer.MergedCells)
+        {
+            string mergedCells = string.Join(separator, cellStrList.Where(item => !string.IsNullOrEmpty(item)));
+
+            if (string.IsNullOrWhiteSpace(mergedCells) == false)
+            {
+                cellStr += $"{separator}{mergedCells}";
+            }
+
+            cellStrList = new List<string> { cellStr };
+
         }
 
         object finalVal = null;
         try
         {
-            var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
-            var customParserValue = TryParseUsingStaticMethod(cellStr, field.FieldType);
+            string parerValue = cellStr;
+
+            if (excelParer != null && excelParer.MergedCells)
+            {
+                parerValue = string.Join(separator, cellStrList.Where(item => !string.IsNullOrEmpty(item)));
+            }
+
+            var customParserValue = TryParseUsingStaticMethod(parerValue, field.FieldType);
+
             if (customParserValue != null)
             {
                 finalVal = customParserValue;
@@ -286,12 +345,12 @@ public static class ExcelLoader
             else if (excelParer != null && excelParer.CustomParser != null)
             {
                 ICustomParser parser = (ICustomParser)Activator.CreateInstance(excelParer.CustomParser);
-                finalVal = parser.Parse(cellStr);
+                finalVal = parser.Parse(parerValue);
             }
             else if (typeof(ICustomParser).IsAssignableFrom(field.FieldType))
             {
                 ICustomParser parser = (ICustomParser)Activator.CreateInstance(field.FieldType);
-                finalVal = parser?.Parse(cellStr);
+                finalVal = parser?.Parse(parerValue);
             }
             else if (field.FieldType.IsEnum)
             {
@@ -307,22 +366,52 @@ public static class ExcelLoader
             }
             else if (field.FieldType.IsArray)
             {
+
+
                 Type elemType = field.FieldType.GetElementType();
-                var splitted = cellStr.Split(',').Select(s => Convert.ChangeType(s.Trim(), elemType)).ToArray();
-                var arr = Array.CreateInstance(elemType, splitted.Length);
-                splitted.CopyTo(arr, 0);
-                finalVal = arr;
+
+                if (cellStrList != null && cellStrList.Count > 1)
+                {
+                    var splitted = cellStrList.Select(s => Convert.ChangeType(s.Trim(), elemType)).ToArray();
+                    var arr = Array.CreateInstance(elemType, splitted.Length);
+                    splitted.CopyTo(arr, 0);
+                    finalVal = arr;
+                }
+                else
+                {
+                    var splitted = cellStr.Split(separator).Select(s => Convert.ChangeType(s.Trim(), elemType)).ToArray();
+                    var arr = Array.CreateInstance(elemType, splitted.Length);
+                    splitted.CopyTo(arr, 0);
+                    finalVal = arr;
+                }
+
+
             }
             else if (field.FieldType.IsGenericType && field.FieldType.GetGenericTypeDefinition() == typeof(List<>))
             {
                 var elemType = field.FieldType.GetGenericArguments()[0];
+
                 var listObj = Activator.CreateInstance(field.FieldType) as System.Collections.IList;
-                foreach (var part in cellStr.Split(','))
+
+                if (cellStrList != null && cellStrList.Count > 1)
                 {
-                    string trimmed = part.Trim();
-                    if (!string.IsNullOrEmpty(trimmed))
+                    foreach (var part in cellStrList)
+                    {
+                        string trimmed = part.Trim();
                         listObj.Add(Convert.ChangeType(trimmed, elemType));
+                    }
                 }
+                else
+                {
+                    foreach (var part in cellStr.Split(separator))
+                    {
+                        string trimmed = part.Trim();
+                        if (!string.IsNullOrEmpty(trimmed))
+                            listObj.Add(Convert.ChangeType(trimmed, elemType));
+                    }
+                }
+
+
                 finalVal = listObj;
             }
             else if (field.FieldType == typeof(Vector2))
@@ -341,7 +430,7 @@ public static class ExcelLoader
         catch
         {
             Debug.LogError($"Convert Error Sheet {sheet.TableName} : {field.Name} {field.FieldType.Name} , cellString : {cellStr}");
-            var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
+            //var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
             return excelParer != null ? excelParer.DefaultValue : GetDefaultValue(field.FieldType);
         }
 
@@ -391,7 +480,7 @@ public static class ExcelLoader
         return null;
     }
 
-    private static void StoreInContainer(object container, DataTable sheet, FieldInfo parentField, List<Dictionary<string, string>> dataList)
+    private static void StoreInContainer(object container, DataTable sheet, FieldInfo parentField, List<Dictionary<string, List<string>>> dataList)
     {
         Type dataType = GetDataType(parentField);
 
@@ -418,12 +507,20 @@ public static class ExcelLoader
 
             foreach (var kv in data)
             {
+
                 if (dataFields.TryGetValue(kv.Key, out var fieldInfo))
                 {
                     object fieldValue = ConvertAndValidate(kv.Value, fieldInfo.Field, sheet);
+
+
                     if (objectKey == null) objectKey = fieldValue;
                     fieldInfo.Field.SetValue(instance, fieldValue);
                 }
+                //foreach (var kv in data2.Value)
+                //{
+
+                //}
+
             }
 
             foreach (var kv in dataFields)
@@ -435,7 +532,7 @@ public static class ExcelLoader
                 bool isValid = mpAttr.ColumnNames.All(col => !string.IsNullOrWhiteSpace(col) && data.ContainsKey(col));
                 if (!isValid) continue;
 
-                var values = mpAttr.ColumnNames.Select(col => data[col]).ToArray();
+                var values = mpAttr.ColumnNames.Select(col => ((data[col] == null || data[col].Count == 0) ? "" : data[col][0])).ToArray();
                 var mp = (IMultiColumnParser)Activator.CreateInstance(mpAttr.ParserType);
                 kv.Value.Field.SetValue(instance, mp.Parse(values));
             }
