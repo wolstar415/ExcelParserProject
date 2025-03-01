@@ -143,7 +143,7 @@ public static class ExcelLoader
                     foreach (var entrys in matchedFieldEntrys)
                     {
                         bool _columnBase = false;
-                        if (isColumnBased && entrys.Binding != null && entrys.Binding.isColumnBased)
+                        if (isColumnBased || ( entrys.Binding != null && entrys.Binding.isColumnBased ))
                         {
                             _columnBase = true;
                         }
