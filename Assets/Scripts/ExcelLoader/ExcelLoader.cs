@@ -17,12 +17,12 @@ public class ContainerFieldInfo
 public static class ExcelLoader
 {
     //private static string Separator = "\u001f";
-    public static void LoadExcelFile<T>(T container, string path) where T : class
+    public static T LoadExcelFile<T>(T container, string path) where T : class
     {
         if (File.Exists(path) == false)
         {
             Debug.LogError($"[ExcelLoader] File not found: {path}");
-            return;
+            return container;
         }
 
         if (container == null)
@@ -49,17 +49,19 @@ public static class ExcelLoader
             }
         }
 
+
+        return container;
     }
 
     static string[] excelExtensions = new[] { "*.xls", "*.xlsx", "*.xlsb", "*.csv" };
 
 
-    public static void LoadAllExcelFiles<T>(T container, string folderPath) where T : class
+    public static T LoadAllExcelFiles<T>(T container, string folderPath) where T : class
     {
         if (!Directory.Exists(folderPath))
         {
             Debug.LogError($"[ExcelLoader] Folder not found: {folderPath}");
-            return;
+            return container;
         }
 
         if (container == null)
@@ -96,6 +98,8 @@ public static class ExcelLoader
                 throw new Exception($"[ExcelLoader] Sheet not found for {entry.Field.Name}");
             }
         }
+
+        return container;
     }
 
     private static void LoadExcel<T>(T container, string filePath, List<ContainerFieldInfo> containerFields) where T : class
