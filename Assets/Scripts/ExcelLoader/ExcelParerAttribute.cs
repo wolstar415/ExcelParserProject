@@ -23,8 +23,6 @@ public class ExcelParerAttribute : Attribute
     /// <summary> 무시하는 데이터</summary>
     public bool Ignore { get; set; }
     /// <summary>필수 데이터 설정 데이터가 0개라면 에러</summary>
-    public bool RequiredColumn { get; set; }
-    /// <summary>해당 데이터가 빈칸이라면 Default Value 설정</summary>
     public object DefaultValue { get; set; }
     /// <summary>커스텀 파서</summary>
     public Type CustomParser { get; set; }
@@ -55,7 +53,6 @@ public class ExcelParerAttribute : Attribute
     {
         this.ColumnName = columnName;
         this.Ignore = ignore;
-        this.RequiredColumn = requiredColumn;
         this.DefaultValue = defaultValue;
         this.CustomParser = customParser;
         this.Separator = separator;

@@ -497,9 +497,14 @@ public static class ExcelLoader
         var bindAttr = parentField.GetCustomAttribute<SheetBindingAttribute>();
 
         var dataFields = dataType.GetFields(BindingFlags.Public | BindingFlags.Instance)
-                                 .Select(f => new { Field = f, Parser = f.GetCustomAttribute<ExcelParerAttribute>(), MultiParser = f.GetCustomAttribute<MultiColumnParserAttribute>() })
-                                 .ToDictionary(x => x.Field.Name, x => x);
-
+            .Select(f => new
+            {
+                Field = f,
+                Parser = f.GetCustomAttribute<ExcelParerAttribute>(),
+                MultiParser = f.GetCustomAttribute<MultiColumnParserAttribute>()
+            })
+            .Where(x => x.Parser == null || !x.Parser.Ignore) // Ignore가 true인 경우 제외
+            .ToList();
         foreach (var data in dataList)
         {
             object instance = Activator.CreateInstance(dataType);
@@ -507,25 +512,30 @@ public static class ExcelLoader
 
             foreach (var kv in data)
             {
-
-                if (dataFields.TryGetValue(kv.Key, out var fieldInfo))
+                if (dataFields != null && dataFields.Count > 0)
                 {
-                    object fieldValue = ConvertAndValidate(kv.Value, fieldInfo.Field, sheet);
+                    foreach (var fieldInfo in dataFields)
+                    {
+                        string name = fieldInfo.Field.Name;
 
+                        if (fieldInfo.Parser != null && string.IsNullOrEmpty(fieldInfo.Parser.ColumnName) == false)
+                            name = fieldInfo.Parser.ColumnName;
 
-                    if (objectKey == null) objectKey = fieldValue;
-                    fieldInfo.Field.SetValue(instance, fieldValue);
+                        if (string.Equals(name, kv.Key, StringComparison.OrdinalIgnoreCase))
+                        {
+                            object fieldValue = ConvertAndValidate(kv.Value, fieldInfo.Field, sheet);
+
+                            if (objectKey == null) objectKey = fieldValue;
+                            fieldInfo.Field.SetValue(instance, fieldValue);
+                            break;
+                        }
+                    }
                 }
-                //foreach (var kv in data2.Value)
-                //{
-
-                //}
-
             }
 
             foreach (var kv in dataFields)
             {
-                var mpAttr = kv.Value.MultiParser;
+                var mpAttr = kv.MultiParser;
                 if (mpAttr == null || mpAttr.ColumnNames == null || mpAttr.ColumnNames.Length == 0)
                     continue;
 
@@ -534,7 +544,7 @@ public static class ExcelLoader
 
                 var values = mpAttr.ColumnNames.Select(col => ((data[col] == null || data[col].Count == 0) ? "" : data[col][0])).ToArray();
                 var mp = (IMultiColumnParser)Activator.CreateInstance(mpAttr.ParserType);
-                kv.Value.Field.SetValue(instance, mp.Parse(values));
+                kv.Field.SetValue(instance, mp.Parse(values));
             }
 
             object key = null;
