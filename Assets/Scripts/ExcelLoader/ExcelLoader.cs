@@ -117,6 +117,9 @@ public static class ExcelLoader
             foreach (DataTable sheet in ds.Tables)
             {
                 string rawSheet = sheet.TableName ?? "";
+                if (string.IsNullOrEmpty(rawSheet))
+                    continue;
+                rawSheet = rawSheet.Trim();
                 if (rawSheet.StartsWith("~") || rawSheet.StartsWith("#")) continue;
 
                 bool isColumnBased = false;
@@ -143,7 +146,8 @@ public static class ExcelLoader
                     foreach (var entrys in matchedFieldEntrys)
                     {
                         bool _columnBase = false;
-                        if (isColumnBased || ( entrys.Binding != null && entrys.Binding.isColumnBased ))
+
+                        if (isColumnBased && entrys.Binding != null && entrys.Binding.isColumnBased)
                         {
                             _columnBase = true;
                         }
