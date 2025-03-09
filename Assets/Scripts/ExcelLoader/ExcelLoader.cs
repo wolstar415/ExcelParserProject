@@ -610,7 +610,7 @@ public static class ExcelLoader
                 }
                 else
                 {
-                    if (!bindAttr.skipDuplicates)
+                    if (bindAttr!=null && !bindAttr.skipDuplicates)
                     {
                         throw new Exception($"[ExcelLoader] Duplicate key {key} in dict field={field.Name}");
                     }
