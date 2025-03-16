@@ -16,45 +16,25 @@ public class ContainerFieldInfo
 
 public static class ExcelLoader
 {
-    //private static string Separator = "\u001f";
+    static string[] excelExtensions = new[] { "*.xls", "*.xlsx", "*.xlsb", "*.csv" };
+
     public static T LoadExcelFile<T>(T container, string path) where T : class
     {
-        if (File.Exists(path) == false)
+        if (!File.Exists(path))
         {
             Debug.LogError($"[ExcelLoader] File not found: {path}");
             return container;
         }
 
-        if (container == null)
-        {
-            container = (T)Activator.CreateInstance(typeof(T));
-        }
-
-        var containerFields = container.GetType()
-    .GetFields(BindingFlags.Public | BindingFlags.Instance)
-    .Select(f => new ContainerFieldInfo
-    {
-        Field = f,
-        Binding = f.GetCustomAttribute<SheetBindingAttribute>()
-    })
-    .ToList();
+        container ??= (T)Activator.CreateInstance(typeof(T));
+        var containerFields = GetContainerFields(container);
 
         LoadExcel(container, path, containerFields);
 
-        foreach (var entry in containerFields)
-        {
-            if (entry.Binding != null && !entry.Binding.optional && entry.Field.GetValue(container) == null)
-            {
-                throw new Exception($"[ExcelLoader] Sheet not found for {entry.Field.Name}");
-            }
-        }
-
+        ValidateContainerFields(container, containerFields);
 
         return container;
     }
-
-    static string[] excelExtensions = new[] { "*.xls", "*.xlsx", "*.xlsb", "*.csv" };
-
 
     public static T LoadAllExcelFiles<T>(T container, string folderPath) where T : class
     {
@@ -64,33 +44,38 @@ public static class ExcelLoader
             return container;
         }
 
-        if (container == null)
-        {
-            container = (T)Activator.CreateInstance(typeof(T));
-        }
+        container ??= (T)Activator.CreateInstance(typeof(T));
+        var containerFields = GetContainerFields(container);
 
-        var containerFields = container.GetType()
-    .GetFields(BindingFlags.Public | BindingFlags.Instance)
-    .Select(f => new ContainerFieldInfo
-    {
-        Field = f,
-        Binding = f.GetCustomAttribute<SheetBindingAttribute>()
-    })
-    .ToList();
-
-        //var files = Directory.GetFiles(folderPath, "*.xlsx", SearchOption.TopDirectoryOnly);
         var excelFiles = excelExtensions
-    .SelectMany(ext => Directory.GetFiles(folderPath, ext, SearchOption.TopDirectoryOnly))
-    .ToArray();
+            .SelectMany(ext => Directory.GetFiles(folderPath, ext, SearchOption.TopDirectoryOnly))
+            .Where(file => !Path.GetFileName(file).StartsWith("~"))
+            .ToArray();
 
         foreach (var file in excelFiles)
         {
-            string fileName = Path.GetFileName(file);
-            if (fileName.StartsWith("~")) continue;
-
             LoadExcel(container, file, containerFields);
         }
 
+        ValidateContainerFields(container, containerFields);
+
+        return container;
+    }
+
+    private static List<ContainerFieldInfo> GetContainerFields<T>(T container) where T : class
+    {
+        return container.GetType()
+            .GetFields(BindingFlags.Public | BindingFlags.Instance)
+            .Select(f => new ContainerFieldInfo
+            {
+                Field = f,
+                Binding = f.GetCustomAttribute<SheetBindingAttribute>()
+            })
+            .ToList();
+    }
+
+    private static void ValidateContainerFields<T>(T container, List<ContainerFieldInfo> containerFields) where T : class
+    {
         foreach (var entry in containerFields)
         {
             if (entry.Binding != null && !entry.Binding.optional && entry.Field.GetValue(container) == null)
@@ -98,76 +83,45 @@ public static class ExcelLoader
                 throw new Exception($"[ExcelLoader] Sheet not found for {entry.Field.Name}");
             }
         }
-
-        return container;
     }
 
     private static void LoadExcel<T>(T container, string filePath, List<ContainerFieldInfo> containerFields) where T : class
     {
-        if (container == null)
-        {
-            container = (T)Activator.CreateInstance(typeof(T));
-        }
+        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = ExcelReaderFactory.CreateReader(stream);
+        var ds = reader.AsDataSet();
 
-        using (var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-        using (var reader = ExcelReaderFactory.CreateReader(stream))
+        foreach (DataTable sheet in ds.Tables)
         {
-            var ds = reader.AsDataSet();
+            string rawSheet = sheet.TableName?.Trim() ?? "";
+            if (string.IsNullOrEmpty(rawSheet) || rawSheet.StartsWith("~") || rawSheet.StartsWith("#")) continue;
 
-            foreach (DataTable sheet in ds.Tables)
+            bool isColumnBased = rawSheet.StartsWith("!") || rawSheet.StartsWith("*");
+            if (isColumnBased) rawSheet = rawSheet[1..];
+
+            string sheetName = rawSheet.Split('#')[0].Trim();
+
+            var matchedFieldEntrys = containerFields
+                .Where(entry => entry.Binding?.SheetName?.Equals(sheetName, StringComparison.OrdinalIgnoreCase) == true ||
+                                entry.Field.Name.Equals(sheetName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            foreach (var entry in matchedFieldEntrys)
             {
-                string rawSheet = sheet.TableName ?? "";
-                if (string.IsNullOrEmpty(rawSheet))
-                    continue;
-                rawSheet = rawSheet.Trim();
-                if (rawSheet.StartsWith("~") || rawSheet.StartsWith("#")) continue;
-
-                bool isColumnBased = false;
-                if (rawSheet.StartsWith("!") || rawSheet.StartsWith("*"))
-                {
-                    isColumnBased = true;
-                    rawSheet = rawSheet.Substring(1);
-                }
-
-                string sheetName = rawSheet.Split('#')[0].Trim();
-
-                var matchedFieldEntrys = containerFields.Where((entry) =>
-
-                {
-                    if (entry.Binding != null && entry.Binding.SheetName != null)
-                    {
-                        return entry.Binding.SheetName.Equals(sheetName, StringComparison.OrdinalIgnoreCase);
-                    }
-                    return entry.Field.Name.Equals(sheetName, StringComparison.OrdinalIgnoreCase);
-                }).ToList();
-
-                if (matchedFieldEntrys != null && matchedFieldEntrys.Count > 0)
-                {
-                    foreach (var entrys in matchedFieldEntrys)
-                    {
-                        bool _columnBase = false;
-
-                        if (isColumnBased && entrys.Binding != null && entrys.Binding.isColumnBased)
-                        {
-                            _columnBase = true;
-                        }
-                        ParseSheetAndStore(container, sheet, entrys.Field, isColumnBased || _columnBase);
-                    }
-                }
+                bool _columnBase = isColumnBased && entry.Binding?.isColumnBased == true;
+                ParseSheetAndStore(container, sheet, entry.Field, isColumnBased || _columnBase);
             }
         }
     }
-
     private static void ParseSheetAndStore(object container, DataTable sheet, FieldInfo field, bool isColumnBased)
     {
-        List<Dictionary<string, List<string>>> dataList = ParseSheet(sheet, isColumnBased);
-
+        var dataList = ParseSheet(sheet, isColumnBased);
         StoreInContainer(container, sheet, field, dataList);
     }
 
     private static List<Dictionary<string, List<string>>> ParseSheet(DataTable sheet, bool isColumnBased)
     {
-        List<Dictionary<string, List<string>>> dataList = new();
+        var dataList = new List<Dictionary<string, List<string>>>();
 
         int primaryCount = isColumnBased ? sheet.Rows.Count : sheet.Columns.Count;
         int secondaryCount = isColumnBased ? sheet.Columns.Count : sheet.Rows.Count;
@@ -179,13 +133,9 @@ public static class ExcelLoader
         }
 
         int startIndex = 0;
-
         for (int i = 0; i < secondaryCount; i++)
         {
-            string head = isColumnBased
-                ? sheet.Rows[0][i]?.ToString() ?? ""
-                : sheet.Rows[i][0]?.ToString() ?? "";
-
+            string head = isColumnBased ? sheet.Rows[0][i]?.ToString() ?? "" : sheet.Rows[i][0]?.ToString() ?? "";
             if (!string.IsNullOrEmpty(head) && (head.StartsWith("//") || head.StartsWith("##")))
             {
                 startIndex++;
@@ -203,95 +153,31 @@ public static class ExcelLoader
         var headerMap = new Dictionary<int, string>();
         for (int i = 0; i < primaryCount; i++)
         {
-            string head = isColumnBased
-                ? sheet.Rows[i][startIndex]?.ToString() ?? ""
-                : sheet.Rows[startIndex][i]?.ToString() ?? "";
-
-            if (string.IsNullOrWhiteSpace(head))
-                continue;
-            headerMap[i] = head;
+            string head = isColumnBased ? sheet.Rows[i][startIndex]?.ToString() ?? "" : sheet.Rows[startIndex][i]?.ToString() ?? "";
+            if (!string.IsNullOrWhiteSpace(head)) headerMap[i] = head;
         }
 
-        var grouped = new Dictionary<string, List<int>>();
-        for (int i = 0; i < primaryCount; i++)
-        {
-            if (headerMap.ContainsKey(i) == false)
-                continue;
-            string rawHeader = headerMap[i];
-            if (string.IsNullOrWhiteSpace(rawHeader)) continue;
-            if (rawHeader.StartsWith("~") || rawHeader.StartsWith("#")) continue;
-
-            string baseName = rawHeader.Split('#')[0].Trim();
-
-            if (string.IsNullOrWhiteSpace(baseName))
-                continue;
-
-            if (!grouped.ContainsKey(baseName))
-                grouped[baseName] = new List<int>();
-            grouped[baseName].Add(i);
-        }
+        var grouped = headerMap
+            .Where(kv => !string.IsNullOrWhiteSpace(kv.Value) && !kv.Value.StartsWith("~") && !kv.Value.StartsWith("#"))
+            .GroupBy(kv => kv.Value.Split('#')[0].Trim())
+            .ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).ToList());
 
         for (int j = startIndex + 1; j < secondaryCount; j++)
         {
-
-            string head = isColumnBased
-    ? sheet.Rows[0][j]?.ToString() ?? ""
-    : sheet.Rows[j][0]?.ToString() ?? "";
-
-            if (!string.IsNullOrEmpty(head) && (head.StartsWith("//") || head.StartsWith("##")))
-            {
-                continue;
-            }
+            string head = isColumnBased ? sheet.Rows[0][j]?.ToString() ?? "" : sheet.Rows[j][0]?.ToString() ?? "";
+            if (!string.IsNullOrEmpty(head) && (head.StartsWith("//") || head.StartsWith("##"))) continue;
 
             var fieldValues = new Dictionary<string, List<string>>();
             bool hasData = false;
 
             foreach (var kv in grouped)
             {
-                string baseName = kv.Key;
-
-                if (string.IsNullOrWhiteSpace(baseName))
-                {
-                    continue;
-                }
-
-                List<int> indices = kv.Value;
-                //List<string> parts = new();
-
-                foreach (int i in indices)
-                {
-                    string oriName = isColumnBased
-                        ? sheet.Rows[i][startIndex]?.ToString() ?? ""
-                        : sheet.Rows[startIndex][i]?.ToString() ?? "";
-                    if (string.IsNullOrWhiteSpace(oriName))
-                    {
-                        continue;
-                    }
-
-                    string cellVal = isColumnBased
-                    ? sheet.Rows[i][j]?.ToString() ?? ""
-                    : sheet.Rows[j][i]?.ToString() ?? "";
-
-
-                    if (!string.IsNullOrWhiteSpace(cellVal))
-                    {
-                        hasData = true;
-                    }
-                    else
-                    {
-                        cellVal = "";
-                    }
-
-                    if (fieldValues.ContainsKey(baseName) == false)
-                    {
-                        fieldValues.Add(baseName, new());
-                    }
-
-                    fieldValues[baseName].Add(cellVal);
-                }
+                var values = kv.Value.Select(i => isColumnBased ? sheet.Rows[i][j]?.ToString() ?? "" : sheet.Rows[j][i]?.ToString() ?? "").ToList();
+                if (values.Any(v => !string.IsNullOrWhiteSpace(v))) hasData = true;
+                fieldValues[kv.Key] = values;
             }
-            if (!hasData)
-                break;
+
+            if (!hasData) break;
             dataList.Add(fieldValues);
         }
 
@@ -610,7 +496,7 @@ public static class ExcelLoader
                 }
                 else
                 {
-                    if (bindAttr!=null && !bindAttr.skipDuplicates)
+                    if (bindAttr != null && !bindAttr.skipDuplicates)
                     {
                         throw new Exception($"[ExcelLoader] Duplicate key {key} in dict field={field.Name}");
                     }
