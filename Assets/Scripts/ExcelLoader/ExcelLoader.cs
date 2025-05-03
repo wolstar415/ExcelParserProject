@@ -186,7 +186,7 @@ public static class ExcelLoader
 
     private static object ConvertAndValidate(List<string> cellStrList, FieldInfo field, DataTable sheet)
     {
-        var excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
+        ExcelParerAttribute excelParer = field.GetCustomAttribute<ExcelParerAttribute>();
 
         string cellStr = "";
 
@@ -223,57 +223,20 @@ public static class ExcelLoader
         object finalVal = null;
         try
         {
-            string parerValue = cellStr;
-
-            if (excelParer != null && excelParer.MergedCells)
+            if (field.FieldType.IsArray)
             {
-                parerValue = string.Join(separator, cellStrList.Where(item => !string.IsNullOrEmpty(item)));
-            }
-
-            var customParserValue = TryParseUsingStaticMethod(parerValue, field.FieldType);
-
-            if (customParserValue != null)
-            {
-                finalVal = customParserValue;
-            }
-            else if (excelParer != null && excelParer.CustomParser != null)
-            {
-                ICustomParser parser = (ICustomParser)Activator.CreateInstance(excelParer.CustomParser);
-                finalVal = parser.Parse(parerValue);
-            }
-            else if (typeof(ICustomParser).IsAssignableFrom(field.FieldType))
-            {
-                ICustomParser parser = (ICustomParser)Activator.CreateInstance(field.FieldType);
-                finalVal = parser?.Parse(parerValue);
-            }
-            else if (field.FieldType.IsEnum)
-            {
-                if (Enum.TryParse(field.FieldType, cellStr, true, out object enResult))
-                {
-                    finalVal = enResult;
-                }
-                else
-                {
-                    Debug.LogError($"Enum Parse Error sheet : {sheet.Namespace} fieldName : {field.Name} {field.FieldType.Name} , cellString : {cellStr}");
-                    return excelParer != null ? excelParer.DefaultValue : GetDefaultValue(field.FieldType);
-                }
-            }
-            else if (field.FieldType.IsArray)
-            {
-
-
                 Type elemType = field.FieldType.GetElementType();
 
                 if (cellStrList != null && cellStrList.Count > 1)
                 {
-                    var splitted = cellStrList.Select(s => Convert.ChangeType(s.Trim(), elemType)).ToArray();
+                    var splitted = cellStrList.Select(s => TryParseCellStr(s.Trim(), elemType, excelParer)).ToArray();
                     var arr = Array.CreateInstance(elemType, splitted.Length);
                     splitted.CopyTo(arr, 0);
                     finalVal = arr;
                 }
                 else
                 {
-                    var splitted = cellStr.Split(separator).Select(s => Convert.ChangeType(s.Trim(), elemType)).ToArray();
+                    var splitted = cellStr.Split(separator).Select(s => TryParseCellStr(s.Trim(), elemType, excelParer)).ToArray();
                     var arr = Array.CreateInstance(elemType, splitted.Length);
                     splitted.CopyTo(arr, 0);
                     finalVal = arr;
@@ -292,7 +255,7 @@ public static class ExcelLoader
                     foreach (var part in cellStrList)
                     {
                         string trimmed = part.Trim();
-                        listObj.Add(Convert.ChangeType(trimmed, elemType));
+                        listObj.Add(TryParseCellStr(trimmed, elemType, excelParer));
                     }
                 }
                 else
@@ -301,24 +264,16 @@ public static class ExcelLoader
                     {
                         string trimmed = part.Trim();
                         if (!string.IsNullOrEmpty(trimmed))
-                            listObj.Add(Convert.ChangeType(trimmed, elemType));
+                            listObj.Add(TryParseCellStr(trimmed, elemType, excelParer));
                     }
                 }
 
 
                 finalVal = listObj;
             }
-            else if (field.FieldType == typeof(Vector2))
-            {
-                finalVal = Vector2Parser.ParseValue(cellStr);
-            }
-            else if (field.FieldType == typeof(Vector3))
-            {
-                finalVal = Vector3Parser.ParseValue(cellStr);
-            }
             else
             {
-                finalVal = Convert.ChangeType(cellStr, field.FieldType);
+                finalVal = TryParseCellStr(cellStrList, field.FieldType, excelParer);
             }
         }
         catch
@@ -348,6 +303,73 @@ public static class ExcelLoader
         }
 
         return finalVal;
+    }
+
+    private static object TryParseCellStr(string cellStr, Type type, ExcelParerAttribute excelParer = null)
+    {
+        var customParserValue = TryParseUsingStaticMethod(cellStr, type);
+
+        if (customParserValue != null)
+        {
+            return customParserValue;
+        }
+        else if (excelParer != null && excelParer.CustomParser != null)
+        {
+            ICustomParser parser = (ICustomParser)Activator.CreateInstance(excelParer.CustomParser);
+            return parser.Parse(cellStr);
+        }
+        else if (typeof(ICustomParser).IsAssignableFrom(type))
+        {
+            ICustomParser parser = (ICustomParser)Activator.CreateInstance(type);
+            return parser?.Parse(cellStr);
+        }
+        else if (type.IsEnum)
+        {
+            if (Enum.TryParse(type, cellStr, true, out object enResult))
+            {
+                return enResult;
+            }
+            else
+            {
+                return excelParer != null ? excelParer.DefaultValue : GetDefaultValue(type);
+            }
+        }
+        else if (type == typeof(Vector2))
+        {
+            return Vector2Parser.ParseValue(cellStr);
+        }
+        else if (type == typeof(Vector3))
+        {
+            return Vector3Parser.ParseValue(cellStr);
+        }
+        else
+        {
+            return Convert.ChangeType(cellStr, type);
+        }
+    }
+
+    private static object TryParseCellStr(List<string> cellStrList, Type type, ExcelParerAttribute excelParer = null)
+    {
+        string separator = ",";
+
+        string cellStr = "";
+
+        if (excelParer != null)
+        {
+            separator = excelParer.Separator;
+        }
+
+        if (cellStrList != null && cellStrList.Count > 0)
+        {
+            cellStr = cellStrList[0];
+        }
+
+        if (excelParer != null && excelParer.MergedCells)
+        {
+            return string.Join(separator, cellStrList.Where(item => !string.IsNullOrEmpty(item)));
+        }
+
+        return TryParseCellStr(cellStr, type, excelParer);
     }
 
     private static object TryParseUsingStaticMethod(string value, Type targetType)
