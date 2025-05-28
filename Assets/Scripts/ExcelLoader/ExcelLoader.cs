@@ -325,13 +325,21 @@ public static class ExcelLoader
         }
         else if (type.IsEnum)
         {
+            if (string.IsNullOrEmpty(cellStr))
+            {
+                return excelParer != null ? excelParer.DefaultValue : GetDefaultValue(type);
+            }
+
             if (Enum.TryParse(type, cellStr, true, out object enResult))
             {
                 return enResult;
             }
             else
             {
-                return excelParer != null ? excelParer.DefaultValue : GetDefaultValue(type);
+                if (excelParer != null)
+                    return excelParer.DefaultValue;
+
+                throw new Exception();
             }
         }
         else if (type == typeof(Vector2))
