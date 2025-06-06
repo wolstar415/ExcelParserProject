@@ -126,7 +126,7 @@ public static class ExcelLoader
         int primaryCount = isColumnBased ? sheet.Rows.Count : sheet.Columns.Count;
         int secondaryCount = isColumnBased ? sheet.Columns.Count : sheet.Rows.Count;
 
-        if (primaryCount <= 1)
+        if ((isColumnBased && secondaryCount <= 1) || (!isColumnBased && primaryCount <= 1))
         {
             Debug.LogWarning($"[ExcelLoader] Sheet {sheet.TableName} is empty or lacks enough {(isColumnBased ? "rows" : "columns")} for parsing.");
             return dataList;
