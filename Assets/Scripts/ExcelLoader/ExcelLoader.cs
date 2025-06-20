@@ -16,7 +16,7 @@ public class ContainerFieldInfo
 
 public static class ExcelLoader
 {
-    static string[] excelExtensions = new[] { "*.xls", "*.xlsx", "*.xlsb", "*.csv" };
+    static string[] ExcelExtensions = new[] { "*.xls", "*.xlsx", "*.xlsb", "*.csv" };
 
     public static T LoadExcelFile<T>(T container, string path) where T : class
     {
@@ -36,7 +36,7 @@ public static class ExcelLoader
         return container;
     }
 
-    public static T LoadAllExcelFiles<T>(T container, string folderPath) where T : class
+    public static T LoadAllExcelFiles<T>(T container, string folderPath, bool recursive = true) where T : class
     {
         if (!Directory.Exists(folderPath))
         {
@@ -47,20 +47,52 @@ public static class ExcelLoader
         container ??= (T)Activator.CreateInstance(typeof(T));
         var containerFields = GetContainerFields(container);
 
-        var excelFiles = excelExtensions
-            .SelectMany(ext => Directory.GetFiles(folderPath, ext, SearchOption.TopDirectoryOnly))
-            .Where(file => !Path.GetFileName(file).StartsWith("~"))
-            .ToArray();
+        var excelFiles = CollectExcelFiles(folderPath, recursive);
 
-        foreach (var file in excelFiles)
+        for (int i = 0; i < excelFiles.Count; i++)
         {
-            LoadExcel(container, file, containerFields);
+            LoadExcel(container, excelFiles[i], containerFields);
         }
 
         ValidateContainerFields(container, containerFields);
 
         return container;
     }
+
+    private static List<string> CollectExcelFiles(string folderPath, bool recursive)
+    {
+        var result = new List<string>(32);
+        CollectExcelFilesInternal(folderPath, recursive, result);
+        return result;
+    }
+
+    private static void CollectExcelFilesInternal(string folderPath, bool recursive, List<string> result)
+    {
+        for (int i = 0; i < ExcelExtensions.Length; i++)
+        {
+            var files = Directory.GetFiles(folderPath, ExcelExtensions[i], SearchOption.TopDirectoryOnly);
+            for (int j = 0; j < files.Length; j++)
+            {
+                var fileName = Path.GetFileName(files[j]);
+                if (fileName.Length == 0 || fileName[0] == '~') continue;
+                result.Add(files[j]);
+            }
+        }
+
+        if (!recursive)
+            return;
+
+        var subDirs = Directory.GetDirectories(folderPath);
+        for (int i = 0; i < subDirs.Length; i++)
+        {
+            var folderName = Path.GetFileName(subDirs[i]);
+            if (folderName.Length == 0 || folderName[0] == '~' || folderName[0] == '!' || folderName[0] == '#')
+                continue;
+
+            CollectExcelFilesInternal(subDirs[i], true, result);
+        }
+    }
+
 
     private static List<ContainerFieldInfo> GetContainerFields<T>(T container) where T : class
     {
@@ -229,14 +261,14 @@ public static class ExcelLoader
 
                 if (cellStrList != null && cellStrList.Count > 1)
                 {
-                    var splitted = cellStrList.Select(s => TryParseCellStr(s.Trim(), elemType, excelParer)).ToArray();
+                    var splitted = cellStrList.Select(s => TryParseCellStr(s?.Trim(), elemType, excelParer)).ToArray();
                     var arr = Array.CreateInstance(elemType, splitted.Length);
                     splitted.CopyTo(arr, 0);
                     finalVal = arr;
                 }
                 else
                 {
-                    var splitted = cellStr.Split(separator).Select(s => TryParseCellStr(s.Trim(), elemType, excelParer)).ToArray();
+                    var splitted = cellStr.Split(separator).Select(s => TryParseCellStr(s?.Trim(), elemType, excelParer)).ToArray();
                     var arr = Array.CreateInstance(elemType, splitted.Length);
                     splitted.CopyTo(arr, 0);
                     finalVal = arr;
@@ -307,6 +339,11 @@ public static class ExcelLoader
 
     private static object TryParseCellStr(string cellStr, Type type, ExcelParerAttribute excelParer = null)
     {
+        if (string.IsNullOrEmpty(cellStr))
+        {
+            return excelParer != null ? excelParer.DefaultValue : GetDefaultValue(type);
+        }
+
         var customParserValue = TryParseUsingStaticMethod(cellStr, type);
 
         if (customParserValue != null)
