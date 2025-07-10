@@ -344,6 +344,8 @@ public static class ExcelLoader
             return excelParer != null ? excelParer.DefaultValue : GetDefaultValue(type);
         }
 
+        cellStr = cellStr.TrimEnd();
+
         var customParserValue = TryParseUsingStaticMethod(cellStr, type);
 
         if (customParserValue != null)
