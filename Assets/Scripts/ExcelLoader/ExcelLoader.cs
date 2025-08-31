@@ -176,7 +176,7 @@ public static class ExcelLoader
             break;
         }
 
-        if ((isColumnBased && secondaryCount <= startIndex + 1) || (!isColumnBased && primaryCount <= startIndex + 1))
+        if ((isColumnBased && secondaryCount < startIndex + 1) || (!isColumnBased && primaryCount < startIndex + 1))
         {
             Debug.LogWarning($"[ExcelLoader] Sheet {sheet.TableName} is empty or lacks enough {(isColumnBased ? "rows" : "columns")} for parsing.");
             return dataList;
