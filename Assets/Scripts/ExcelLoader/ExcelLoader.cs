@@ -2,6 +2,7 @@ using ExcelDataReader;
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -241,15 +242,12 @@ public static class ExcelLoader
 
         if (excelParer != null && excelParer.MergedCells)
         {
-            string mergedCells = string.Join(separator, cellStrList.Where(item => !string.IsNullOrEmpty(item)));
-
-            if (string.IsNullOrWhiteSpace(mergedCells) == false)
-            {
-                cellStr += $"{separator}{mergedCells}";
-            }
+            cellStr = string.Join(
+                separator,
+                cellStrList.Where(s => !string.IsNullOrWhiteSpace(s))
+            );
 
             cellStrList = new List<string> { cellStr };
-
         }
 
         object finalVal = null;
@@ -391,7 +389,7 @@ public static class ExcelLoader
         }
         else
         {
-            return Convert.ChangeType(cellStr, type);
+            return Convert.ChangeType(cellStr, type, CultureInfo.InvariantCulture);
         }
     }
 
